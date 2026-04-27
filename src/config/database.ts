@@ -172,7 +172,6 @@ export async function runMigrations(): Promise<void> {
     console.log('✅ Migrações executadas com sucesso!');
   } catch (error) {
     console.error('❌ Erro ao executar migrações:', error);
-    // Não lança erro para não impedir o servidor de iniciar
   }
 }
 
