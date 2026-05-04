@@ -6,13 +6,15 @@
   "scripts": {
     "dev": "tsx --watch src/services/clientsService.ts",
     "build": "tsc",
-    "start": "node dist/services/clientsService.js"
+    "start": "node dist/services/clientsService.js",
+    "migrate:encrypt": "tsx src/scripts/encryptExistingClients.ts"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.22.1",
+    "express-session": "^1.19.0",
     "helmet": "^7.1.0",
     "morgan": "^1.10.0",
     "pg": "^8.16.3",
@@ -26,7 +28,8 @@
     "@types/morgan": "^1.9.10",
     "@types/pg": "^8.15.5",
     "@types/uuid": "^10.0.0",
+    "ts-node": "^10.9.2",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.3"
   }
 }

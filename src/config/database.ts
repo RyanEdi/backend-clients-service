@@ -169,6 +169,97 @@ export async function runMigrations(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_clientes_adv_periodos_cliente_id ON clientes_adv_periodos(cliente_id);
     `);
 
+    // Migração: Tabela de casos
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS casos_adv (
+        id VARCHAR(36) PRIMARY KEY,
+        advogado_id INTEGER NOT NULL,
+        cliente_id VARCHAR(36),
+        tipo VARCHAR(100) NOT NULL,
+        status VARCHAR(30) NOT NULL DEFAULT 'ativo',
+        data_abertura DATE NOT NULL,
+        prazo DATE,
+        observacoes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_casos_adv_advogado_id ON casos_adv(advogado_id);
+    `);
+
+    // Migração: Tabela de petições
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS peticoes_adv (
+        id VARCHAR(36) PRIMARY KEY,
+        advogado_id INTEGER NOT NULL,
+        cliente VARCHAR(200),
+        tipo VARCHAR(100) NOT NULL,
+        numero_caso VARCHAR(50),
+        data_documento DATE,
+        conteudo TEXT,
+        status VARCHAR(30) NOT NULL DEFAULT 'rascunho',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_peticoes_adv_advogado_id ON peticoes_adv(advogado_id);
+    `);
+
+    // Migração: Tabela de eventos
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS eventos_adv (
+        id VARCHAR(36) PRIMARY KEY,
+        advogado_id INTEGER NOT NULL,
+        titulo VARCHAR(200) NOT NULL,
+        tipo VARCHAR(50) NOT NULL,
+        data DATE NOT NULL,
+        hora TIME,
+        cliente_associado VARCHAR(200),
+        numero_caso VARCHAR(50),
+        local VARCHAR(200),
+        observacoes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_eventos_adv_advogado_id ON eventos_adv(advogado_id);
+      CREATE INDEX IF NOT EXISTS idx_eventos_adv_data ON eventos_adv(data);
+    `);
+
+    // Migração: expandir colunas PII para TEXT (suporte a AES-256-CBC cifrado)
+    await pool.query(`
+      DO $$
+      DECLARE rec RECORD;
+      BEGIN
+        -- VARCHAR muito estreitas → TEXT para valores cifrados (~70-130 chars)
+        FOR rec IN
+          SELECT column_name
+          FROM information_schema.columns
+          WHERE table_name = 'clientes_adv'
+            AND column_name = ANY(ARRAY[
+              'nome_completo','cpf','email','telefone','rg','cidade_uf','cep'
+            ])
+            AND data_type != 'text'
+        LOOP
+          EXECUTE format('ALTER TABLE clientes_adv ALTER COLUMN %I TYPE TEXT', rec.column_name);
+        END LOOP;
+
+        -- DATE → TEXT (DATE não aceita strings cifradas)
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'clientes_adv'
+            AND column_name = 'data_nascimento'
+            AND data_type = 'date'
+        ) THEN
+          ALTER TABLE clientes_adv
+            ALTER COLUMN data_nascimento TYPE TEXT USING data_nascimento::TEXT;
+        END IF;
+      END $$;
+    `);
+
     console.log('✅ Migrações executadas com sucesso!');
   } catch (error) {
     console.error('❌ Erro ao executar migrações:', error);

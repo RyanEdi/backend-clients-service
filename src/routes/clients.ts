@@ -1,9 +1,11 @@
 import { Router, Request, Response } from 'express';
+
 import bcrypt from 'bcrypt';
 import { v4 as uuid } from 'uuid';
 import pool from '../config/database';
 import { SALT_ROUNDS } from '../config/constants';
 import { sanitizeText } from '../utils/sanitizers';
+import { encryptField, encryptIfPresent, decryptField } from '../utils/crypto';
 
 const router = Router();
 
@@ -139,7 +141,8 @@ const mapClientFields = (body: Record<string, any>) => {
 };
 
 const getAdvogadoIdFromSession = (req: Request): number | null => {
-  const sessionUserId = (req.session as any)?.usuarioId;
+  // Corrige o tipo de req para incluir session (sem importar Session)
+  const sessionUserId = (req as Request & { session?: { usuarioId?: number } })?.session?.usuarioId;
   if (sessionUserId && !Number.isNaN(Number(sessionUserId))) {
     return Number(sessionUserId);
   }
@@ -227,6 +230,25 @@ const hashSensitiveSnapshot = async (snapshot: Record<string, string>) => {
   return Object.fromEntries(entries);
 };
 
+/**
+ * Decifra os campos PII de uma linha retornada pelo SELECT.
+ * Compatível com dados legados (sem prefixo 'enc:') — retorna como está.
+ */
+const decryptClientRow = (row: Record<string, any>): Record<string, any> => ({
+  ...row,
+  name: row.name ? decryptField(String(row.name)) : row.name,
+  cpf: row.cpf ? decryptField(String(row.cpf)) : row.cpf,
+  dataNascimento: row.dataNascimento
+    ? decryptField(String(row.dataNascimento))
+    : row.dataNascimento,
+  email: row.email ? decryptField(String(row.email)) : row.email,
+  phone: row.phone ? decryptField(String(row.phone)) : row.phone,
+  zipCode: row.zipCode ? decryptField(String(row.zipCode)) : row.zipCode,
+  address: row.address ? decryptField(String(row.address)) : row.address,
+  rg: row.rg ? decryptField(String(row.rg)) : row.rg,
+  cidadeUf: row.cidadeUf ? decryptField(String(row.cidadeUf)) : row.cidadeUf,
+});
+
 const clientSelectSql = `
   SELECT
     c.id,
@@ -291,10 +313,26 @@ const attachPeriodos = async (rows: any[]) => {
     grouped.set(periodo.clienteId, list);
   }
 
-  return rows.map(row => ({
-    ...row,
-    periodos: grouped.get(row.id) || [],
-  }));
+  return rows.map(row => {
+    const {
+      advogadoId,
+      nomeAdvogado,
+      ufOab,
+      numeroOab,
+      ...rest
+    } = row;
+    const decrypted = decryptClientRow(rest);
+    return {
+      ...decrypted,
+      user: {
+        id: advogadoId,
+        nome: nomeAdvogado,
+        ufOab,
+        numeroOab,
+      },
+      periodos: grouped.get(row.id) || [],
+    };
+  });
 };
 
 // GET /api/clients
@@ -306,6 +344,10 @@ router.get('/', async (req: Request, res: Response) => {
       .json({ error: 'Sessão expirada. Faça login novamente.' });
   }
 
+  // LOG PARA DEPURAÇÃO DE SESSÃO E HEADER
+  console.log('[CLIENTS SERVICE] session:', (req as any).session);
+  console.log('[CLIENTS SERVICE] x-user-id header:', req.header('x-user-id'));
+
   try {
     const result = await pool.query(
       `${clientSelectSql}
@@ -313,6 +355,8 @@ router.get('/', async (req: Request, res: Response) => {
        ORDER BY c.created_at DESC`,
       [advogadoId]
     );
+    // Log para depuração do resultado da query
+    console.log('Clientes retornados:', result.rows);
     return res.json(await attachPeriodos(result.rows));
   } catch (err) {
     console.error('Erro ao listar clientes:', err);
@@ -328,6 +372,10 @@ router.get('/:id', async (req: Request, res: Response) => {
       .status(401)
       .json({ error: 'Sessão expirada. Faça login novamente.' });
   }
+
+  // LOG PARA DEPURAÇÃO DE SESSÃO E HEADER
+  console.log('[CLIENTS SERVICE] session:', (req as any).session);
+  console.log('[CLIENTS SERVICE] x-user-id header:', req.header('x-user-id'));
 
   try {
     const result = await pool.query(
@@ -435,23 +483,23 @@ router.post('/', async (req: Request, res: Response) => {
       [
         clientId,
         advogadoId,
-        name,
-        cpf,
+        encryptField(name),
+        encryptField(cpf),
         cpfHash,
-        email,
+        encryptIfPresent(email) ?? null,
         emailHash,
-        phone,
+        encryptIfPresent(phone) ?? null,
         phoneHash,
         JSON.stringify(sensitiveHashes),
-        normalizeOptional(fields.zipCode),
-        normalizeOptional(fields.address),
+        encryptIfPresent(normalizeOptional(fields.zipCode)) ?? null,
+        encryptIfPresent(normalizeOptional(fields.address)) ?? null,
         normalizeOptional(fields.estadoCivil),
         normalizeOptional(fields.profissao),
-        rg,
+        encryptIfPresent(rg) ?? null,
         rgHash,
-        normalizeOptional(fields.cidadeUf),
+        encryptIfPresent(normalizeOptional(fields.cidadeUf)) ?? null,
         normalizeOptional(fields.contribuicaoMensal),
-        normalizeOptional(fields.dataNascimento),
+        encryptIfPresent(normalizeOptional(fields.dataNascimento)) ?? null,
         normalizeOptional(fields.valorDanoMoral),
         normalizeOptional(fields.valorDaCausa),
         fields.possuiDeficiencia ?? false,
@@ -495,7 +543,11 @@ router.post('/', async (req: Request, res: Response) => {
     return res.status(201).json(withPeriodos[0]);
   } catch (err) {
     await pool.query('ROLLBACK');
-    console.error('Erro ao criar cliente:', err, err?.stack || '');
+    if (err instanceof Error) {
+      console.error('Erro ao criar cliente:', err, err.stack);
+    } else {
+      console.error('Erro ao criar cliente:', err);
+    }
     return res.status(500).json({ error: 'Erro ao criar cliente.' });
   }
 });
@@ -531,18 +583,18 @@ router.patch('/:id', async (req: Request, res: Response) => {
 
   addUpdate(
     'nome_completo',
-    fields.name !== undefined ? fields.name.trim() : undefined
+    fields.name !== undefined ? encryptField(fields.name.trim()) : undefined
   );
-  addUpdate('cpf', fields.cpf !== undefined ? fields.cpf.trim() : undefined);
-  addUpdate('data_nascimento', normalizeOptional(fields.dataNascimento));
-  addUpdate('email', normalizeOptional(fields.email));
-  addUpdate('telefone', normalizeOptional(fields.phone));
-  addUpdate('cep', normalizeOptional(fields.zipCode));
-  addUpdate('endereco_completo', normalizeOptional(fields.address));
+  addUpdate('cpf', fields.cpf !== undefined ? encryptField(fields.cpf.trim()) : undefined);
+  addUpdate('data_nascimento', encryptIfPresent(normalizeOptional(fields.dataNascimento)));
+  addUpdate('email', encryptIfPresent(normalizeOptional(fields.email)));
+  addUpdate('telefone', encryptIfPresent(normalizeOptional(fields.phone)));
+  addUpdate('cep', encryptIfPresent(normalizeOptional(fields.zipCode)));
+  addUpdate('endereco_completo', encryptIfPresent(normalizeOptional(fields.address)));
   addUpdate('estado_civil', normalizeOptional(fields.estadoCivil));
   addUpdate('profissao', normalizeOptional(fields.profissao));
-  addUpdate('rg', normalizeOptional(fields.rg));
-  addUpdate('cidade_uf', normalizeOptional(fields.cidadeUf));
+  addUpdate('rg', encryptIfPresent(normalizeOptional(fields.rg)));
+  addUpdate('cidade_uf', encryptIfPresent(normalizeOptional(fields.cidadeUf)));
   addUpdate(
     'contribuicao_mensal',
     normalizeOptional(fields.contribuicaoMensal)
@@ -594,7 +646,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Cliente não encontrado' });
     }
 
-    const existing = existingResult.rows[0];
+    const existing = decryptClientRow(existingResult.rows[0]);
     const existingPeriodosResult = await pool.query(
       `SELECT tipo, data_inicio AS inicio, data_fim AS fim
        FROM clientes_adv_periodos
