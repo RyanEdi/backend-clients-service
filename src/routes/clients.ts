@@ -247,6 +247,10 @@ const decryptClientRow = (row: Record<string, any>): Record<string, any> => ({
   address: row.address ? decryptField(String(row.address)) : row.address,
   rg: row.rg ? decryptField(String(row.rg)) : row.rg,
   cidadeUf: row.cidadeUf ? decryptField(String(row.cidadeUf)) : row.cidadeUf,
+  tipoDeficiencia: row.tipoDeficiencia ? decryptField(String(row.tipoDeficiencia)) : row.tipoDeficiencia,
+  dataLaudo: row.dataLaudo ? decryptField(String(row.dataLaudo)) : row.dataLaudo,
+  cid: row.cid ? decryptField(String(row.cid)) : row.cid,
+  grauDeficienciaIfbra: row.grauDeficienciaIfbra ? decryptField(String(row.grauDeficienciaIfbra)) : row.grauDeficienciaIfbra,
 });
 
 const clientSelectSql = `
@@ -344,10 +348,6 @@ router.get('/', async (req: Request, res: Response) => {
       .json({ error: 'Sessão expirada. Faça login novamente.' });
   }
 
-  // LOG PARA DEPURAÇÃO DE SESSÃO E HEADER
-  console.log('[CLIENTS SERVICE] session:', (req as any).session);
-  console.log('[CLIENTS SERVICE] x-user-id header:', req.header('x-user-id'));
-
   try {
     const result = await pool.query(
       `${clientSelectSql}
@@ -355,8 +355,6 @@ router.get('/', async (req: Request, res: Response) => {
        ORDER BY c.created_at DESC`,
       [advogadoId]
     );
-    // Log para depuração do resultado da query
-    console.log('Clientes retornados:', result.rows);
     return res.json(await attachPeriodos(result.rows));
   } catch (err) {
     console.error('Erro ao listar clientes:', err);
@@ -372,10 +370,6 @@ router.get('/:id', async (req: Request, res: Response) => {
       .status(401)
       .json({ error: 'Sessão expirada. Faça login novamente.' });
   }
-
-  // LOG PARA DEPURAÇÃO DE SESSÃO E HEADER
-  console.log('[CLIENTS SERVICE] session:', (req as any).session);
-  console.log('[CLIENTS SERVICE] x-user-id header:', req.header('x-user-id'));
 
   try {
     const result = await pool.query(
@@ -503,10 +497,10 @@ router.post('/', async (req: Request, res: Response) => {
         normalizeOptional(fields.valorDanoMoral),
         normalizeOptional(fields.valorDaCausa),
         fields.possuiDeficiencia ?? false,
-        normalizeOptional(fields.tipoDeficiencia),
-        normalizeOptional(fields.dataLaudo),
-        normalizeOptional(fields.cid),
-        normalizeOptional(fields.grauDeficienciaIfbra),
+        encryptIfPresent(normalizeOptional(fields.tipoDeficiencia)) ?? null,
+        encryptIfPresent(normalizeOptional(fields.dataLaudo)) ?? null,
+        encryptIfPresent(normalizeOptional(fields.cid)) ?? null,
+        encryptIfPresent(normalizeOptional(fields.grauDeficienciaIfbra)) ?? null,
         normalizeOptional(fields.documentoComprobatorioNome),
         normalizeOptional(fields.sexoPrevidenciario),
         fields.calculoPrevidenciario
@@ -605,12 +599,12 @@ router.patch('/:id', async (req: Request, res: Response) => {
     updates.push(`possui_deficiencia = $${values.length + 1}`);
     values.push(fields.possuiDeficiencia ? 'true' : 'false');
   }
-  addUpdate('tipo_deficiencia', normalizeOptional(fields.tipoDeficiencia));
-  addUpdate('data_laudo', normalizeOptional(fields.dataLaudo));
-  addUpdate('cid', normalizeOptional(fields.cid));
+  addUpdate('tipo_deficiencia', encryptIfPresent(normalizeOptional(fields.tipoDeficiencia)));
+  addUpdate('data_laudo', encryptIfPresent(normalizeOptional(fields.dataLaudo)));
+  addUpdate('cid', encryptIfPresent(normalizeOptional(fields.cid)));
   addUpdate(
     'grau_deficiencia_ifbra',
-    normalizeOptional(fields.grauDeficienciaIfbra)
+    encryptIfPresent(normalizeOptional(fields.grauDeficienciaIfbra))
   );
   addUpdate(
     'documento_comprobatorio_nome',

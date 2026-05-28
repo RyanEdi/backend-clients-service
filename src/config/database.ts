@@ -260,6 +260,51 @@ export async function runMigrations(): Promise<void> {
       END $$;
     `);
 
+    // Migração: expandir colunas de saúde/deficiência para TEXT (suporte a AES-256-CBC cifrado)
+    await pool.query(`
+      DO $$
+      BEGIN
+        -- VARCHAR estreitos → TEXT para valores cifrados
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'clientes_adv'
+            AND column_name = 'tipo_deficiencia'
+            AND data_type != 'text'
+        ) THEN
+          ALTER TABLE clientes_adv ALTER COLUMN tipo_deficiencia TYPE TEXT;
+        END IF;
+
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'clientes_adv'
+            AND column_name = 'cid'
+            AND data_type != 'text'
+        ) THEN
+          ALTER TABLE clientes_adv ALTER COLUMN cid TYPE TEXT;
+        END IF;
+
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'clientes_adv'
+            AND column_name = 'grau_deficiencia_ifbra'
+            AND data_type != 'text'
+        ) THEN
+          ALTER TABLE clientes_adv ALTER COLUMN grau_deficiencia_ifbra TYPE TEXT;
+        END IF;
+
+        -- DATE → TEXT (DATE não aceita strings cifradas)
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'clientes_adv'
+            AND column_name = 'data_laudo'
+            AND data_type = 'date'
+        ) THEN
+          ALTER TABLE clientes_adv
+            ALTER COLUMN data_laudo TYPE TEXT USING data_laudo::TEXT;
+        END IF;
+      END $$;
+    `);
+
     console.log('✅ Migrações executadas com sucesso!');
   } catch (error) {
     console.error('❌ Erro ao executar migrações:', error);
