@@ -11,7 +11,8 @@ export const getAllowedOrigins = (): string[] => {
 };
 
 export const resolvePort = (envName: string, fallback: number): number => {
-  const raw = process.env[envName];
+  const raw =
+    process.env[envName] || (envName === 'PORT' ? process.env.PORT : undefined);
   const parsed = raw ? Number(raw) : NaN;
   return Number.isFinite(parsed) ? parsed : fallback;
 };

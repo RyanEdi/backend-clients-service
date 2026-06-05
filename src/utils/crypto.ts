@@ -44,7 +44,7 @@ export const decryptField = (value: string): string => {
     decrypted += decipher.final('utf8');
     return decrypted;
   } catch {
-    return value; // fallback seguro
+    return value; // retorno de seguranca em caso de falha na decifragem
   }
 };
 
