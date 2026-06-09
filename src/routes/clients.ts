@@ -258,7 +258,7 @@ const clientSelectSql = `
     c.id,
     c.nome_completo AS name,
     c.cpf,
-    c.data_nascimento AS "dataNascimento",
+    a.data_nascimento AS "dataNascimento",
     c.email,
     c.telefone AS phone,
     c.cep AS "zipCode",
