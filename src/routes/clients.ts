@@ -2,12 +2,14 @@ import { Router, Request, Response } from 'express';
 
 import bcrypt from 'bcrypt';
 import { v4 as uuid } from 'uuid';
+import multer from 'multer';
 import pool from '../config/database';
 import { SALT_ROUNDS } from '../config/constants';
 import { sanitizeText } from '../utils/sanitizers';
 import { encryptField, encryptIfPresent, decryptField } from '../utils/crypto';
 
 const router = Router();
+const upload = multer();
 
 type PeriodoPayload = {
   tipo?: string;
@@ -96,11 +98,19 @@ const mapClientFields = (body: Record<string, any>) => {
   const rawGrauDeficienciaIfbra = body.grauDeficienciaIfbra;
   const rawDocumentoComprobatorioNome = body.documentoComprobatorioNome;
   const rawSexoPrevidenciario = body.sexoPrevidenciario;
-  const rawCalculoPrevidenciario = body.calculoPrevidenciario;
   const rawObservacoesJuridicas = body.observacoesJuridicas;
   const rawEnderecoEscritorio = body.enderecoEscritorio;
   const rawEnderecoDfIprev = body.enderecoDfIprev;
-  const rawPeriodos = body.periodos;
+
+let rawPeriodos = body.periodos;
+  if (typeof rawPeriodos === 'string') {
+    try { rawPeriodos = JSON.parse(rawPeriodos); } catch { rawPeriodos = []; }
+  }
+
+let rawCalculoPrevidenciario = body.calculoPrevidenciario;
+  if (typeof rawCalculoPrevidenciario === 'string') {
+    try { rawCalculoPrevidenciario = JSON.parse(rawCalculoPrevidenciario); } catch { rawCalculoPrevidenciario = undefined; }
+  }
 
   return {
     name: sanitizeOptionalText(rawName),
@@ -404,10 +414,10 @@ router.post('/', async (req: Request, res: Response) => {
   const cpf = fields.cpf?.trim() || '';
 
   if (!name || !cpf) {
-    return res
-      .status(400)
-      .json({ error: 'Nome completo e CPF são obrigatórios.' });
+    return res.status(400).json({ error: 'Nome completo e CPF são obrigatórios.' });
   }
+
+  const client = await pool.connect();
 
   try {
     const clientId = uuid();
@@ -543,6 +553,8 @@ router.post('/', async (req: Request, res: Response) => {
       console.error('Erro ao criar cliente:', err);
     }
     return res.status(500).json({ error: 'Erro ao criar cliente.' });
+  } finally {
+    client.release();
   }
 });
 
@@ -628,6 +640,8 @@ router.patch('/:id', async (req: Request, res: Response) => {
     normalizeOptional(fields.enderecoEscritorio)
   );
   addUpdate('endereco_df_iprev', normalizeOptional(fields.enderecoDfIprev));
+
+  const client = await pool.connect();
 
   try {
     const existingResult = await pool.query(
@@ -844,6 +858,8 @@ router.patch('/:id', async (req: Request, res: Response) => {
     await pool.query('ROLLBACK');
     console.error('Erro ao atualizar cliente:', err);
     return res.status(500).json({ error: 'Erro ao atualizar cliente.' });
+  } finally {
+    client.release();
   }
 });
 
