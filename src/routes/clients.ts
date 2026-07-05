@@ -417,8 +417,11 @@ router.post('/', upload.single('documentoComprobatorio'), async (req: Request, r
         grau_deficiencia_ifbra, documento_comprobatorio_nome, sexo_previdenciario,
         calculo_previdenciario, observacoes_juridicas, endereco_escritorio, endereco_df_iprev
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-        $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29::jsonb, $30, $31, $32
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, 
+        $10::jsonb, -- CORREÇÃO AQUI: Adicionado o ::jsonb
+        $11, $12, $13, $14, $15, $16, $17, $18,
+        $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, 
+        $29::jsonb, $30, $31, $32
       )`,
       [
         clientId, advogadoId, encryptField(name), encryptField(cpf), cpfHash,
@@ -573,7 +576,8 @@ router.patch('/:id', upload.single('documentoComprobatorio'), async (req: Reques
     });
 
     const sensitiveHashes = await hashSensitiveSnapshot(mergedSensitiveSnapshot);
-    addUpdate('dados_sensiveis_hash', JSON.stringify(sensitiveHashes));
+    updates.push(`dados_sensiveis_hash = $${values.length + 1}::jsonb`);
+    values.push(JSON.stringify(sensitiveHashes));
 
     if (fields.cpf !== undefined) {
       const cpfValue = fields.cpf.trim();
