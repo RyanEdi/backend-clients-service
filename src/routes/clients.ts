@@ -1,5 +1,4 @@
 import { Router, Request, Response } from 'express';
-
 import bcrypt from 'bcrypt';
 import { v4 as uuid } from 'uuid';
 import multer from 'multer';
@@ -9,6 +8,7 @@ import { sanitizeText } from '../utils/sanitizers';
 import { encryptField, encryptIfPresent, decryptField } from '../utils/crypto';
 
 const router = Router();
+// Multer configurado em memória para interpretar os dados multipart/form-data
 const upload = multer();
 
 type PeriodoPayload = {
@@ -76,14 +76,15 @@ const sanitizeOptionalText = (raw: unknown): string | undefined => {
   return sanitized;
 };
 
-const mapClientFields = (body: Record<string, any>) => {
-  const rawName = body.name ?? body.nomeAutor ?? body.nome_completo;
+// MODIFICADO: Agora aceita o arquivo vindo do multer para extrair o nome original
+const mapClientFields = (body: Record<string, any>, file?: Express.Multer.File) => {
+  const rawName = body.name ?? body.nomeAutor ?? body.nome_completo ?? body.nome; // Adicionado fallback para 'nome'
   const rawCpf = body.cpf;
   const rawDataNascimento = body.dataNascimento ?? body.data_nascimento;
   const rawEmail = body.email ?? body.emailAutor;
   const rawPhone = body.phone ?? body.telefone;
   const rawZipCode = body.zipCode ?? body.cep;
-  const rawAddress = body.address ?? body.enderecoCompleto;
+  const rawAddress = body.address ?? body.enderecoCompleto ?? body.endereco;
   const rawEstadoCivil = body.estadoCivil;
   const rawProfissao = body.profissao;
   const rawRg = body.rg;
@@ -96,18 +97,19 @@ const mapClientFields = (body: Record<string, any>) => {
   const rawDataLaudo = body.dataLaudo;
   const rawCid = body.cid;
   const rawGrauDeficienciaIfbra = body.grauDeficienciaIfbra;
-  const rawDocumentoComprobatorioNome = body.documentoComprobatorioNome;
+  // MODIFICADO: Pega o nome vindo do body OU pega diretamente do arquivo do multer
+  const rawDocumentoComprobatorioNome = body.documentoComprobatorioNome ?? file?.originalname;
   const rawSexoPrevidenciario = body.sexoPrevidenciario;
   const rawObservacoesJuridicas = body.observacoesJuridicas;
   const rawEnderecoEscritorio = body.enderecoEscritorio;
   const rawEnderecoDfIprev = body.enderecoDfIprev;
 
-let rawPeriodos = body.periodos;
+  let rawPeriodos = body.periodos;
   if (typeof rawPeriodos === 'string') {
     try { rawPeriodos = JSON.parse(rawPeriodos); } catch { rawPeriodos = []; }
   }
 
-let rawCalculoPrevidenciario = body.calculoPrevidenciario;
+  let rawCalculoPrevidenciario = body.calculoPrevidenciario;
   if (typeof rawCalculoPrevidenciario === 'string') {
     try { rawCalculoPrevidenciario = JSON.parse(rawCalculoPrevidenciario); } catch { rawCalculoPrevidenciario = undefined; }
   }
@@ -127,17 +129,16 @@ let rawCalculoPrevidenciario = body.calculoPrevidenciario;
     contribuicaoMensal: sanitizeOptionalText(rawContribuicaoMensal),
     valorDanoMoral: sanitizeOptionalText(rawValorDanoMoral),
     valorDaCausa: sanitizeOptionalText(rawValorDaCausa),
+    // MODIFICADO: Trata booleans que chegam como strings do FormData ("true" / "false")
     possuiDeficiencia:
       rawPossuiDeficiencia !== undefined
-        ? Boolean(rawPossuiDeficiencia)
+        ? (rawPossuiDeficiencia === 'true' || rawPossuiDeficiencia === true)
         : undefined,
     tipoDeficiencia: sanitizeOptionalText(rawTipoDeficiencia),
     dataLaudo: sanitizeOptionalText(rawDataLaudo),
     cid: sanitizeOptionalText(rawCid),
     grauDeficienciaIfbra: sanitizeOptionalText(rawGrauDeficienciaIfbra),
-    documentoComprobatorioNome: sanitizeOptionalText(
-      rawDocumentoComprobatorioNome
-    ),
+    documentoComprobatorioNome: sanitizeOptionalText(rawDocumentoComprobatorioNome),
     sexoPrevidenciario: sanitizeOptionalText(rawSexoPrevidenciario),
     calculoPrevidenciario:
       rawCalculoPrevidenciario && typeof rawCalculoPrevidenciario === 'object'
@@ -151,7 +152,6 @@ let rawCalculoPrevidenciario = body.calculoPrevidenciario;
 };
 
 const getAdvogadoIdFromSession = (req: Request): number | null => {
-  // Corrige o tipo de req para incluir session (sem importar Session)
   const sessionUserId = (req as Request & { session?: { usuarioId?: number } })?.session?.usuarioId;
   if (sessionUserId && !Number.isNaN(Number(sessionUserId))) {
     return Number(sessionUserId);
@@ -240,10 +240,6 @@ const hashSensitiveSnapshot = async (snapshot: Record<string, string>) => {
   return Object.fromEntries(entries);
 };
 
-/**
- * Decifra os campos PII de uma linha retornada pelo SELECT.
- * Compatível com dados legados (sem prefixo 'enc:') — retorna como está.
- */
 const decryptClientRow = (row: Record<string, any>): Record<string, any> => ({
   ...row,
   name: row.name ? decryptField(String(row.name)) : row.name,
@@ -326,43 +322,23 @@ const attachPeriodos = async (rows: any[]) => {
   }
 
   return rows.map(row => {
-    const {
-      advogadoId,
-      nomeAdvogado,
-      ufOab,
-      numeroOab,
-      ...rest
-    } = row;
+    const { advogadoId, nomeAdvogado, ufOab, numeroOab, ...rest } = row;
     const decrypted = decryptClientRow(rest);
     return {
       ...decrypted,
-      user: {
-        id: advogadoId,
-        nome: nomeAdvogado,
-        ufOab,
-        numeroOab,
-      },
+      user: { id: advogadoId, nome: nomeAdvogado, ufOab, numeroOab },
       periodos: grouped.get(row.id) || [],
     };
   });
 };
 
-// GET /api/clients
 router.get('/', async (req: Request, res: Response) => {
   const advogadoId = getAdvogadoIdFromSession(req);
   if (!advogadoId) {
-    return res
-      .status(401)
-      .json({ error: 'Sessão expirada. Faça login novamente.' });
+    return res.status(401).json({ error: 'Sessão expirada. Faça login novamente.' });
   }
-
   try {
-    const result = await pool.query(
-      `${clientSelectSql}
-       WHERE c.advogado_id = $1
-       ORDER BY c.created_at DESC`,
-      [advogadoId]
-    );
+    const result = await pool.query(`${clientSelectSql} WHERE c.advogado_id = $1 ORDER BY c.created_at DESC`, [advogadoId]);
     return res.json(await attachPeriodos(result.rows));
   } catch (err) {
     console.error('Erro ao listar clientes:', err);
@@ -370,26 +346,14 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/clients/:id
 router.get('/:id', async (req: Request, res: Response) => {
   const advogadoId = getAdvogadoIdFromSession(req);
   if (!advogadoId) {
-    return res
-      .status(401)
-      .json({ error: 'Sessão expirada. Faça login novamente.' });
+    return res.status(401).json({ error: 'Sessão expirada. Faça login novamente.' });
   }
-
   try {
-    const result = await pool.query(
-      `${clientSelectSql}
-       WHERE c.id = $1 AND c.advogado_id = $2`,
-      [req.params.id, advogadoId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Cliente não encontrado' });
-    }
-
+    const result = await pool.query(`${clientSelectSql} WHERE c.id = $1 AND c.advogado_id = $2`, [req.params.id, advogadoId]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Cliente não encontrado' });
     const withPeriodos = await attachPeriodos(result.rows);
     return res.json(withPeriodos[0]);
   } catch (err) {
@@ -398,16 +362,15 @@ router.get('/:id', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/clients
-router.post('/', async (req: Request, res: Response) => {
+// MODIFICADO: Adicionado upload.single('documentoComprobatorio') para permitir leitura do req.body
+router.post('/', upload.single('documentoComprobatorio'), async (req: Request, res: Response) => {
   const advogadoId = getAdvogadoIdFromSession(req);
   if (!advogadoId) {
-    return res
-      .status(401)
-      .json({ error: 'Sessão expirada. Faça login novamente.' });
+    return res.status(401).json({ error: 'Sessão expirada. Faça login novamente.' });
   }
 
-  const fields = mapClientFields(req.body || {});
+  // MODIFICADO: Passando o req.file também para extrair o nome do documento
+  const fields = mapClientFields(req.body || {}, req.file);
   const name = fields.name?.trim() || '';
   const cpf = fields.cpf?.trim() || '';
 
@@ -416,7 +379,6 @@ router.post('/', async (req: Request, res: Response) => {
   }
 
   const client = await pool.connect();
-
   try {
     const clientId = uuid();
     const cpfHash = await bcrypt.hash(cpf, SALT_ROUNDS);
@@ -424,148 +386,91 @@ router.post('/', async (req: Request, res: Response) => {
     const phone = normalizeOptional(fields.phone);
     const rg = normalizeOptional(fields.rg);
 
-    const emailHash = email
-      ? await bcrypt.hash(email.toLowerCase(), SALT_ROUNDS)
-      : null;
+    const emailHash = email ? await bcrypt.hash(email.toLowerCase(), SALT_ROUNDS) : null;
     const phoneHash = phone ? await bcrypt.hash(phone, SALT_ROUNDS) : null;
     const rgHash = rg ? await bcrypt.hash(rg, SALT_ROUNDS) : null;
 
     const sensitiveSnapshot = buildSensitiveSnapshot({
-      name,
-      cpf,
-      dataNascimento: normalizeOptional(fields.dataNascimento),
-      email,
-      phone,
-      zipCode: normalizeOptional(fields.zipCode),
-      address: normalizeOptional(fields.address),
-      estadoCivil: normalizeOptional(fields.estadoCivil),
-      profissao: normalizeOptional(fields.profissao),
-      rg,
-      cidadeUf: normalizeOptional(fields.cidadeUf),
-      contribuicaoMensal: normalizeOptional(fields.contribuicaoMensal),
-      valorDanoMoral: normalizeOptional(fields.valorDanoMoral),
-      valorDaCausa: normalizeOptional(fields.valorDaCausa),
-      possuiDeficiencia: fields.possuiDeficiencia ?? false,
-      tipoDeficiencia: normalizeOptional(fields.tipoDeficiencia),
-      dataLaudo: normalizeOptional(fields.dataLaudo),
-      cid: normalizeOptional(fields.cid),
+      name, cpf, dataNascimento: normalizeOptional(fields.dataNascimento), email, phone,
+      zipCode: normalizeOptional(fields.zipCode), address: normalizeOptional(fields.address),
+      estadoCivil: normalizeOptional(fields.estadoCivil), profissao: normalizeOptional(fields.profissao),
+      rg, cidadeUf: normalizeOptional(fields.cidadeUf), contribuicaoMensal: normalizeOptional(fields.contribuicaoMensal),
+      valorDanoMoral: normalizeOptional(fields.valorDanoMoral), valorDaCausa: normalizeOptional(fields.valorDaCausa),
+      possuiDeficiencia: fields.possuiDeficiencia ?? false, tipoDeficiencia: normalizeOptional(fields.tipoDeficiencia),
+      dataLaudo: normalizeOptional(fields.dataLaudo), cid: normalizeOptional(fields.cid),
       grauDeficienciaIfbra: normalizeOptional(fields.grauDeficienciaIfbra),
-      documentoComprobatorioNome: normalizeOptional(
-        fields.documentoComprobatorioNome
-      ),
+      documentoComprobatorioNome: normalizeOptional(fields.documentoComprobatorioNome),
       sexoPrevidenciario: normalizeOptional(fields.sexoPrevidenciario),
       calculoPrevidenciario: fields.calculoPrevidenciario ?? null,
       observacoesJuridicas: normalizeOptional(fields.observacoesJuridicas),
       enderecoEscritorio: normalizeOptional(fields.enderecoEscritorio),
-      enderecoDfIprev: normalizeOptional(fields.enderecoDfIprev),
-      periodos: fields.periodos,
+      enderecoDfIprev: normalizeOptional(fields.enderecoDfIprev), periodos: fields.periodos,
     });
     const sensitiveHashes = await hashSensitiveSnapshot(sensitiveSnapshot);
 
     await pool.query('BEGIN');
-
     await pool.query(
       `INSERT INTO clientes_adv (
         id, advogado_id, nome_completo, cpf, cpf_hash, email, email_hash, telefone, telefone_hash,
-        dados_sensiveis_hash,
-        cep, endereco_completo, estado_civil, profissao, rg, rg_hash, cidade_uf, contribuicao_mensal,
-        data_nascimento,
-        valor_dano_moral, valor_da_causa, possui_deficiencia, tipo_deficiencia, data_laudo, cid,
+        dados_sensiveis_hash, cep, endereco_completo, estado_civil, profissao, rg, rg_hash, cidade_uf, contribuicao_mensal,
+        data_nascimento, valor_dano_moral, valor_da_causa, possui_deficiencia, tipo_deficiencia, data_laudo, cid,
         grau_deficiencia_ifbra, documento_comprobatorio_nome, sexo_previdenciario,
         calculo_previdenciario, observacoes_juridicas, endereco_escritorio, endereco_df_iprev
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9,
-        $10,
-        $11, $12, $13, $14, $15, $16, $17, $18,
-        $19,
-        $20, $21, $22, $23, $24, $25,
-        $26, $27, $28,
-        $29::jsonb, $30, $31, $32
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+        $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29::jsonb, $30, $31, $32
       )`,
       [
-        clientId,
-        advogadoId,
-        encryptField(name),
-        encryptField(cpf),
-        cpfHash,
-        encryptIfPresent(email) ?? null,
-        emailHash,
-        encryptIfPresent(phone) ?? null,
-        phoneHash,
-        JSON.stringify(sensitiveHashes),
-        encryptIfPresent(normalizeOptional(fields.zipCode)) ?? null,
-        encryptIfPresent(normalizeOptional(fields.address)) ?? null,
-        normalizeOptional(fields.estadoCivil),
-        normalizeOptional(fields.profissao),
-        encryptIfPresent(rg) ?? null,
-        rgHash,
-        encryptIfPresent(normalizeOptional(fields.cidadeUf)) ?? null,
-        normalizeOptional(fields.contribuicaoMensal),
-        encryptIfPresent(normalizeOptional(fields.dataNascimento)) ?? null,
-        normalizeOptional(fields.valorDanoMoral),
-        normalizeOptional(fields.valorDaCausa),
-        fields.possuiDeficiencia ?? false,
+        clientId, advogadoId, encryptField(name), encryptField(cpf), cpfHash,
+        encryptIfPresent(email) ?? null, emailHash, encryptIfPresent(phone) ?? null, phoneHash,
+        JSON.stringify(sensitiveHashes), encryptIfPresent(normalizeOptional(fields.zipCode)) ?? null,
+        encryptIfPresent(normalizeOptional(fields.address)) ?? null, normalizeOptional(fields.estadoCivil),
+        normalizeOptional(fields.profissao), encryptIfPresent(rg) ?? null, rgHash,
+        encryptIfPresent(normalizeOptional(fields.cidadeUf)) ?? null, normalizeOptional(fields.contribuicaoMensal),
+        encryptIfPresent(normalizeOptional(fields.dataNascimento)) ?? null, normalizeOptional(fields.valorDanoMoral),
+        normalizeOptional(fields.valorDaCausa), fields.possuiDeficiencia ?? false,
         encryptIfPresent(normalizeOptional(fields.tipoDeficiencia)) ?? null,
         encryptIfPresent(normalizeOptional(fields.dataLaudo)) ?? null,
         encryptIfPresent(normalizeOptional(fields.cid)) ?? null,
         encryptIfPresent(normalizeOptional(fields.grauDeficienciaIfbra)) ?? null,
-        normalizeOptional(fields.documentoComprobatorioNome),
-        normalizeOptional(fields.sexoPrevidenciario),
-        fields.calculoPrevidenciario
-          ? JSON.stringify(fields.calculoPrevidenciario)
-          : null,
-        normalizeOptional(fields.observacoesJuridicas),
-        normalizeOptional(fields.enderecoEscritorio),
+        normalizeOptional(fields.documentoComprobatorioNome), normalizeOptional(fields.sexoPrevidenciario),
+        fields.calculoPrevidenciario ? JSON.stringify(fields.calculoPrevidenciario) : null,
+        normalizeOptional(fields.observacoesJuridicas), normalizeOptional(fields.enderecoEscritorio),
         normalizeOptional(fields.enderecoDfIprev),
       ]
     );
 
     for (const periodo of fields.periodos) {
       await pool.query(
-        `INSERT INTO clientes_adv_periodos (cliente_id, tipo, data_inicio, data_fim)
-         VALUES ($1, $2, $3, $4)`,
-        [
-          clientId,
-          periodo.tipo,
-          normalizeOptional(periodo.inicio),
-          normalizeOptional(periodo.fim),
-        ]
+        `INSERT INTO clientes_adv_periodos (cliente_id, tipo, data_inicio, data_fim) VALUES ($1, $2, $3, $4)`,
+        [clientId, periodo.tipo, normalizeOptional(periodo.inicio), normalizeOptional(periodo.fim)]
       );
     }
 
     await pool.query('COMMIT');
 
-    const created = await pool.query(
-      `${clientSelectSql}
-       WHERE c.id = $1 AND c.advogado_id = $2`,
-      [clientId, advogadoId]
-    );
-
+    const created = await pool.query(`${clientSelectSql} WHERE c.id = $1 AND c.advogado_id = $2`, [clientId, advogadoId]);
     const withPeriodos = await attachPeriodos(created.rows);
     return res.status(201).json(withPeriodos[0]);
   } catch (err) {
     await pool.query('ROLLBACK');
-    if (err instanceof Error) {
-      console.error('Erro ao criar cliente:', err, err.stack);
-    } else {
-      console.error('Erro ao criar cliente:', err);
-    }
+    if (err instanceof Error) console.error('Erro ao criar cliente:', err, err.stack);
+    else console.error('Erro ao criar cliente:', err);
     return res.status(500).json({ error: 'Erro ao criar cliente.' });
   } finally {
     client.release();
   }
 });
 
-// PATCH /api/clients/:id
-router.patch('/:id', async (req: Request, res: Response) => {
+// MODIFICADO: Adicionado upload.single('documentoComprobatorio') aqui também para o PATCH
+router.patch('/:id', upload.single('documentoComprobatorio'), async (req: Request, res: Response) => {
   const advogadoId = getAdvogadoIdFromSession(req);
   if (!advogadoId) {
-    return res
-      .status(401)
-      .json({ error: 'Sessão expirada. Faça login novamente.' });
+    return res.status(401).json({ error: 'Sessão expirada. Faça login novamente.' });
   }
 
-  const fields = mapClientFields(req.body || {});
+  // MODIFICADO: Passando o req.file para mapear caso haja update do documento
+  const fields = mapClientFields(req.body || {}, req.file);
   const updates: string[] = [];
   const values: Array<string | null> = [];
   const hasNonPeriodoUpdates = Object.entries(fields).some(
@@ -573,11 +478,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
   );
   const hasFieldUpdates = hasNonPeriodoUpdates || fields.periodos.length > 0;
 
-  if (!hasFieldUpdates) {
-    return res
-      .status(400)
-      .json({ error: 'Nenhum campo válido para atualizar.' });
-  }
+  if (!hasFieldUpdates) return res.status(400).json({ error: 'Nenhum campo válido para atualizar.' });
 
   const addUpdate = (column: string, value: string | null | undefined) => {
     if (value === undefined) return;
@@ -585,10 +486,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
     values.push(value);
   };
 
-  addUpdate(
-    'nome_completo',
-    fields.name !== undefined ? encryptField(fields.name.trim()) : undefined
-  );
+  addUpdate('nome_completo', fields.name !== undefined ? encryptField(fields.name.trim()) : undefined);
   addUpdate('cpf', fields.cpf !== undefined ? encryptField(fields.cpf.trim()) : undefined);
   addUpdate('data_nascimento', encryptIfPresent(normalizeOptional(fields.dataNascimento)));
   addUpdate('email', encryptIfPresent(normalizeOptional(fields.email)));
@@ -599,10 +497,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
   addUpdate('profissao', normalizeOptional(fields.profissao));
   addUpdate('rg', encryptIfPresent(normalizeOptional(fields.rg)));
   addUpdate('cidade_uf', encryptIfPresent(normalizeOptional(fields.cidadeUf)));
-  addUpdate(
-    'contribuicao_mensal',
-    normalizeOptional(fields.contribuicaoMensal)
-  );
+  addUpdate('contribuicao_mensal', normalizeOptional(fields.contribuicaoMensal));
   addUpdate('valor_dano_moral', normalizeOptional(fields.valorDanoMoral));
   addUpdate('valor_da_causa', normalizeOptional(fields.valorDaCausa));
   if (fields.possuiDeficiencia !== undefined) {
@@ -612,52 +507,30 @@ router.patch('/:id', async (req: Request, res: Response) => {
   addUpdate('tipo_deficiencia', encryptIfPresent(normalizeOptional(fields.tipoDeficiencia)));
   addUpdate('data_laudo', encryptIfPresent(normalizeOptional(fields.dataLaudo)));
   addUpdate('cid', encryptIfPresent(normalizeOptional(fields.cid)));
-  addUpdate(
-    'grau_deficiencia_ifbra',
-    encryptIfPresent(normalizeOptional(fields.grauDeficienciaIfbra))
-  );
-  addUpdate(
-    'documento_comprobatorio_nome',
-    normalizeOptional(fields.documentoComprobatorioNome)
-  );
+  addUpdate('grau_deficiencia_ifbra', encryptIfPresent(normalizeOptional(fields.grauDeficienciaIfbra)));
+  addUpdate('documento_comprobatorio_nome', normalizeOptional(fields.documentoComprobatorioNome));
   addUpdate('sexo_previdenciario', normalizeOptional(fields.sexoPrevidenciario));
   if (fields.calculoPrevidenciario !== undefined) {
     updates.push(`calculo_previdenciario = $${values.length + 1}::jsonb`);
-    values.push(
-      fields.calculoPrevidenciario
-        ? JSON.stringify(fields.calculoPrevidenciario)
-        : null
-    );
+    values.push(fields.calculoPrevidenciario ? JSON.stringify(fields.calculoPrevidenciario) : null);
   }
-  addUpdate(
-    'observacoes_juridicas',
-    normalizeOptional(fields.observacoesJuridicas)
-  );
-  addUpdate(
-    'endereco_escritorio',
-    normalizeOptional(fields.enderecoEscritorio)
-  );
+  addUpdate('observacoes_juridicas', normalizeOptional(fields.observacoesJuridicas));
+  addUpdate('endereco_escritorio', normalizeOptional(fields.enderecoEscritorio));
   addUpdate('endereco_df_iprev', normalizeOptional(fields.enderecoDfIprev));
 
   const client = await pool.connect();
 
   try {
     const existingResult = await pool.query(
-      `${clientSelectSql}
-       WHERE c.id = $1 AND c.advogado_id = $2`,
+      `${clientSelectSql} WHERE c.id = $1 AND c.advogado_id = $2`,
       [req.params.id, advogadoId]
     );
 
-    if (existingResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Cliente não encontrado' });
-    }
+    if (existingResult.rows.length === 0) return res.status(404).json({ error: 'Cliente não encontrado' });
 
     const existing = decryptClientRow(existingResult.rows[0]);
     const existingPeriodosResult = await pool.query(
-      `SELECT tipo, data_inicio AS inicio, data_fim AS fim
-       FROM clientes_adv_periodos
-       WHERE cliente_id = $1
-       ORDER BY id ASC`,
+      `SELECT tipo, data_inicio AS inicio, data_fim AS fim FROM clientes_adv_periodos WHERE cliente_id = $1 ORDER BY id ASC`,
       [req.params.id]
     );
 
@@ -673,146 +546,65 @@ router.patch('/:id', async (req: Request, res: Response) => {
     const mergedSensitiveSnapshot = buildSensitiveSnapshot({
       name: fields.name !== undefined ? fields.name.trim() : existing.name,
       cpf: fields.cpf !== undefined ? fields.cpf.trim() : existing.cpf,
-      dataNascimento:
-        fields.dataNascimento !== undefined
-          ? normalizeOptional(fields.dataNascimento)
-          : sanitizeOptionalText(existing.dataNascimento),
-      email:
-        fields.email !== undefined
-          ? normalizeOptional(fields.email)
-          : existing.email,
-      phone:
-        fields.phone !== undefined
-          ? normalizeOptional(fields.phone)
-          : existing.phone,
-      zipCode:
-        fields.zipCode !== undefined
-          ? normalizeOptional(fields.zipCode)
-          : existing.zipCode,
-      address:
-        fields.address !== undefined
-          ? normalizeOptional(fields.address)
-          : existing.address,
-      estadoCivil:
-        fields.estadoCivil !== undefined
-          ? normalizeOptional(fields.estadoCivil)
-          : existing.estadoCivil,
-      profissao:
-        fields.profissao !== undefined
-          ? normalizeOptional(fields.profissao)
-          : existing.profissao,
+      dataNascimento: fields.dataNascimento !== undefined ? normalizeOptional(fields.dataNascimento) : sanitizeOptionalText(existing.dataNascimento),
+      email: fields.email !== undefined ? normalizeOptional(fields.email) : existing.email,
+      phone: fields.phone !== undefined ? normalizeOptional(fields.phone) : existing.phone,
+      zipCode: fields.zipCode !== undefined ? normalizeOptional(fields.zipCode) : existing.zipCode,
+      address: fields.address !== undefined ? normalizeOptional(fields.address) : existing.address,
+      estadoCivil: fields.estadoCivil !== undefined ? normalizeOptional(fields.estadoCivil) : existing.estadoCivil,
+      profissao: fields.profissao !== undefined ? normalizeOptional(fields.profissao) : existing.profissao,
       rg: fields.rg !== undefined ? normalizeOptional(fields.rg) : existing.rg,
-      cidadeUf:
-        fields.cidadeUf !== undefined
-          ? normalizeOptional(fields.cidadeUf)
-          : existing.cidadeUf,
-      contribuicaoMensal:
-        fields.contribuicaoMensal !== undefined
-          ? normalizeOptional(fields.contribuicaoMensal)
-          : existing.contribuicaoMensal,
-      valorDanoMoral:
-        fields.valorDanoMoral !== undefined
-          ? normalizeOptional(fields.valorDanoMoral)
-          : existing.valorDanoMoral,
-      valorDaCausa:
-        fields.valorDaCausa !== undefined
-          ? normalizeOptional(fields.valorDaCausa)
-          : existing.valorDaCausa,
-      possuiDeficiencia:
-        fields.possuiDeficiencia !== undefined
-          ? fields.possuiDeficiencia
-          : existing.possuiDeficiencia,
-      tipoDeficiencia:
-        fields.tipoDeficiencia !== undefined
-          ? normalizeOptional(fields.tipoDeficiencia)
-          : existing.tipoDeficiencia,
-      dataLaudo:
-        fields.dataLaudo !== undefined
-          ? normalizeOptional(fields.dataLaudo)
-          : sanitizeOptionalText(existing.dataLaudo),
-      cid:
-        fields.cid !== undefined ? normalizeOptional(fields.cid) : existing.cid,
-      grauDeficienciaIfbra:
-        fields.grauDeficienciaIfbra !== undefined
-          ? normalizeOptional(fields.grauDeficienciaIfbra)
-          : existing.grauDeficienciaIfbra,
-      documentoComprobatorioNome:
-        fields.documentoComprobatorioNome !== undefined
-          ? normalizeOptional(fields.documentoComprobatorioNome)
-          : existing.documentoComprobatorioNome,
-      sexoPrevidenciario:
-        fields.sexoPrevidenciario !== undefined
-          ? normalizeOptional(fields.sexoPrevidenciario)
-          : existing.sexoPrevidenciario,
-      calculoPrevidenciario:
-        fields.calculoPrevidenciario !== undefined
-          ? fields.calculoPrevidenciario
-          : existing.calculoPrevidenciario,
-      observacoesJuridicas:
-        fields.observacoesJuridicas !== undefined
-          ? normalizeOptional(fields.observacoesJuridicas)
-          : existing.observacoesJuridicas,
-      enderecoEscritorio:
-        fields.enderecoEscritorio !== undefined
-          ? normalizeOptional(fields.enderecoEscritorio)
-          : existing.enderecoEscritorio,
-      enderecoDfIprev:
-        fields.enderecoDfIprev !== undefined
-          ? normalizeOptional(fields.enderecoDfIprev)
-          : existing.enderecoDfIprev,
+      cidadeUf: fields.cidadeUf !== undefined ? normalizeOptional(fields.cidadeUf) : existing.cidadeUf,
+      contribuicaoMensal: fields.contribuicaoMensal !== undefined ? normalizeOptional(fields.contribuicaoMensal) : existing.contribuicaoMensal,
+      valorDanoMoral: fields.valorDanoMoral !== undefined ? normalizeOptional(fields.valorDanoMoral) : existing.valorDanoMoral,
+      valorDaCausa: fields.valorDaCausa !== undefined ? normalizeOptional(fields.valorDaCausa) : existing.valorDaCausa,
+      possuiDeficiencia: fields.possuiDeficiencia !== undefined ? fields.possuiDeficiencia : existing.possuiDeficiencia,
+      tipoDeficiencia: fields.tipoDeficiencia !== undefined ? normalizeOptional(fields.tipoDeficiencia) : existing.tipoDeficiencia,
+      dataLaudo: fields.dataLaudo !== undefined ? normalizeOptional(fields.dataLaudo) : sanitizeOptionalText(existing.dataLaudo),
+      cid: fields.cid !== undefined ? normalizeOptional(fields.cid) : existing.cid,
+      grauDeficienciaIfbra: fields.grauDeficienciaIfbra !== undefined ? normalizeOptional(fields.grauDeficienciaIfbra) : existing.grauDeficienciaIfbra,
+      documentoComprobatorioNome: fields.documentoComprobatorioNome !== undefined ? normalizeOptional(fields.documentoComprobatorioNome) : existing.documentoComprobatorioNome,
+      sexoPrevidenciario: fields.sexoPrevidenciario !== undefined ? normalizeOptional(fields.sexoPrevidenciario) : existing.sexoPrevidenciario,
+      calculoPrevidenciario: fields.calculoPrevidenciario !== undefined ? fields.calculoPrevidenciario : existing.calculoPrevidenciario,
+      observacoesJuridicas: fields.observacoesJuridicas !== undefined ? normalizeOptional(fields.observacoesJuridicas) : existing.observacoesJuridicas,
+      enderecoEscritorio: fields.enderecoEscritorio !== undefined ? normalizeOptional(fields.enderecoEscritorio) : existing.enderecoEscritorio,
+      enderecoDfIprev: fields.enderecoDfIprev !== undefined ? normalizeOptional(fields.enderecoDfIprev) : existing.enderecoDfIprev,
       periodos: periodosForHash,
     });
-    const sensitiveHashes = await hashSensitiveSnapshot(
-      mergedSensitiveSnapshot
-    );
+
+    const sensitiveHashes = await hashSensitiveSnapshot(mergedSensitiveSnapshot);
     addUpdate('dados_sensiveis_hash', JSON.stringify(sensitiveHashes));
 
     if (fields.cpf !== undefined) {
       const cpfValue = fields.cpf.trim();
-      if (!cpfValue) {
-        return res.status(400).json({ error: 'CPF não pode ser vazio.' });
-      }
+      if (!cpfValue) return res.status(400).json({ error: 'CPF não pode ser vazio.' });
       addUpdate('cpf_hash', await bcrypt.hash(cpfValue, SALT_ROUNDS));
     }
 
     if (fields.email !== undefined) {
       const emailValue = normalizeOptional(fields.email);
-      addUpdate(
-        'email_hash',
-        emailValue
-          ? await bcrypt.hash(emailValue.toLowerCase(), SALT_ROUNDS)
-          : null
-      );
+      addUpdate('email_hash', emailValue ? await bcrypt.hash(emailValue.toLowerCase(), SALT_ROUNDS) : null);
     }
 
     if (fields.phone !== undefined) {
       const phoneValue = normalizeOptional(fields.phone);
-      addUpdate(
-        'telefone_hash',
-        phoneValue ? await bcrypt.hash(phoneValue, SALT_ROUNDS) : null
-      );
+      addUpdate('telefone_hash', phoneValue ? await bcrypt.hash(phoneValue, SALT_ROUNDS) : null);
     }
 
     if (fields.rg !== undefined) {
       const rgValue = normalizeOptional(fields.rg);
-      addUpdate(
-        'rg_hash',
-        rgValue ? await bcrypt.hash(rgValue, SALT_ROUNDS) : null
-      );
+      addUpdate('rg_hash', rgValue ? await bcrypt.hash(rgValue, SALT_ROUNDS) : null);
     }
 
     await pool.query('BEGIN');
 
     if (updates.length > 0) {
       updates.push(`updated_at = NOW()`);
-
       values.push(req.params.id);
       values.push(String(advogadoId));
 
       const result = await pool.query(
-        `UPDATE clientes_adv
-         SET ${updates.join(', ')}
-         WHERE id = $${values.length - 1} AND advogado_id = $${values.length}`,
+        `UPDATE clientes_adv SET ${updates.join(', ')} WHERE id = $${values.length - 1} AND advogado_id = $${values.length}`,
         values
       );
 
@@ -823,33 +615,17 @@ router.patch('/:id', async (req: Request, res: Response) => {
     }
 
     if (fields.periodos.length > 0) {
-      await pool.query(
-        'DELETE FROM clientes_adv_periodos WHERE cliente_id = $1',
-        [req.params.id]
-      );
-
+      await pool.query('DELETE FROM clientes_adv_periodos WHERE cliente_id = $1', [req.params.id]);
       for (const periodo of fields.periodos) {
         await pool.query(
-          `INSERT INTO clientes_adv_periodos (cliente_id, tipo, data_inicio, data_fim)
-           VALUES ($1, $2, $3, $4)`,
-          [
-            req.params.id,
-            periodo.tipo,
-            normalizeOptional(periodo.inicio),
-            normalizeOptional(periodo.fim),
-          ]
+          `INSERT INTO clientes_adv_periodos (cliente_id, tipo, data_inicio, data_fim) VALUES ($1, $2, $3, $4)`,
+          [req.params.id, periodo.tipo, normalizeOptional(periodo.inicio), normalizeOptional(periodo.fim)]
         );
       }
     }
 
     await pool.query('COMMIT');
-
-    const updated = await pool.query(
-      `${clientSelectSql}
-       WHERE c.id = $1 AND c.advogado_id = $2`,
-      [req.params.id, advogadoId]
-    );
-
+    const updated = await pool.query(`${clientSelectSql} WHERE c.id = $1 AND c.advogado_id = $2`, [req.params.id, advogadoId]);
     const withPeriodos = await attachPeriodos(updated.rows);
     return res.json(withPeriodos[0]);
   } catch (err) {
@@ -861,25 +637,15 @@ router.patch('/:id', async (req: Request, res: Response) => {
   }
 });
 
-// DELETE /api/clients/:id
 router.delete('/:id', async (req: Request, res: Response) => {
   const advogadoId = getAdvogadoIdFromSession(req);
   if (!advogadoId) {
-    return res
-      .status(401)
-      .json({ error: 'Sessão expirada. Faça login novamente.' });
+    return res.status(401).json({ error: 'Sessão expirada. Faça login novamente.' });
   }
 
   try {
-    const result = await pool.query(
-      'DELETE FROM clientes_adv WHERE id = $1 AND advogado_id = $2 RETURNING id',
-      [req.params.id, advogadoId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Cliente não encontrado' });
-    }
-
+    const result = await pool.query('DELETE FROM clientes_adv WHERE id = $1 AND advogado_id = $2 RETURNING id', [req.params.id, advogadoId]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Cliente não encontrado' });
     return res.json({ success: true, deletedId: result.rows[0].id });
   } catch (err) {
     console.error('Erro ao excluir cliente:', err);
