@@ -457,9 +457,13 @@ router.post('/', upload.single('documentoComprobatorio'), async (req: Request, r
     return res.status(201).json(withPeriodos[0]);
   } catch (err) {
     await pool.query('ROLLBACK');
-    if (err instanceof Error) console.error('Erro ao criar cliente:', err, err.stack);
-    else console.error('Erro ao criar cliente:', err);
-    return res.status(500).json({ error: 'Erro ao criar cliente.' });
+    
+    // Extrai a mensagem de erro real do PostgreSQL ou do Node
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    console.error('Erro detalhado no BD:', err);
+    
+    // Devolve o erro EXATO para a tela do Frontend
+    return res.status(500).json({ error: `Erro SQL: ${errorMessage}` });
   } finally {
     client.release();
   }
