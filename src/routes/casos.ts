@@ -5,7 +5,6 @@ import { sanitizeText } from '../utils/sanitizers';
 
 const router = Router();
 
-// Função auxiliar para verificar o ID do advogado logado
 const getUserId = (req: Request): number | null => {
   const raw = req.headers['x-user-id'];
   const id = Number(raw);
@@ -18,27 +17,25 @@ router.get('/', async (req: Request, res: Response) => {
   if (!advogadoId) return res.status(401).json({ error: 'Não autorizado.' });
 
   try {
-    const result = await pool.query(
-      `SELECT
-          c.id,
-          c.cliente_id AS "clienteId",
-          cl.nome_completo AS "clienteNome",
-          c.tipo,
-          c.status,
-          c.data_abertura AS "dataAbertura",
-          c.prazo,
-          c.observacoes,
-          c.created_at AS "createdAt"
-        FROM casos_adv c
-        LEFT JOIN clientes_adv cl ON cl.id = c.cliente_id
-        WHERE c.advogado_id = $1
-        ORDER BY c.created_at DESC`,
-      [advogadoId]
-    );
+    const query = `
+      SELECT
+          id,
+          cliente_id AS "clienteId",
+          tipo,
+          status,
+          data_abertura AS "dataAbertura",
+          prazo,
+          observacoes,
+          created_at AS "createdAt"
+        FROM casos_adv
+        WHERE advogado_id = $1
+        ORDER BY created_at DESC`;
+    
+    const result = await pool.query(query, [advogadoId]);
     return res.json(result.rows);
-  } catch (err) {
-    console.error('[casos] GET /', err);
-    return res.status(500).json({ error: 'Erro ao listar casos.' });
+  } catch (err: any) {
+    console.error('[casos] Erro GET /:', err.message);
+    return res.status(500).json({ error: 'Erro ao listar casos: ' + err.message });
   }
 });
 
@@ -49,17 +46,14 @@ router.get('/:id', async (req: Request, res: Response) => {
 
   try {
     const result = await pool.query(
-      `SELECT c.*, cl.nome_completo AS "clienteNome"
-       FROM casos_adv c
-       LEFT JOIN clientes_adv cl ON cl.id = c.cliente_id
-       WHERE c.id = $1 AND c.advogado_id = $2`,
+      `SELECT * FROM casos_adv WHERE id = $1 AND advogado_id = $2`,
       [req.params.id, advogadoId]
     );
     if (!result.rows.length) return res.status(404).json({ error: 'Caso não encontrado.' });
     return res.json(result.rows[0]);
-  } catch (err) {
-    console.error('[casos] GET /:id', err);
-    return res.status(500).json({ error: 'Erro ao buscar caso.' });
+  } catch (err: any) {
+    console.error('[casos] Erro GET /:id:', err.message);
+    return res.status(500).json({ error: 'Erro ao buscar caso: ' + err.message });
   }
 });
 
@@ -92,9 +86,9 @@ router.post('/', async (req: Request, res: Response) => {
       ]
     );
     return res.status(201).json(result.rows[0]);
-  } catch (err) {
-    console.error('[casos] POST /', err);
-    return res.status(500).json({ error: 'Erro ao criar caso.' });
+  } catch (err: any) {
+    console.error('[casos] Erro POST /:', err.message);
+    return res.status(500).json({ error: 'Erro ao criar caso: ' + err.message });
   }
 });
 
@@ -106,7 +100,6 @@ router.patch('/:id', async (req: Request, res: Response) => {
   const { clienteId, tipo, dataAbertura, prazo, status, observacoes } = req.body;
 
   try {
-    // Atualiza explicitamente os campos fornecidos ou define como NULL se não informados
     const result = await pool.query(
       `UPDATE casos_adv SET
           cliente_id = $1,
@@ -132,9 +125,9 @@ router.patch('/:id', async (req: Request, res: Response) => {
 
     if (!result.rows.length) return res.status(404).json({ error: 'Caso não encontrado.' });
     return res.json(result.rows[0]);
-  } catch (err) {
-    console.error('[casos] PATCH /:id', err);
-    return res.status(500).json({ error: 'Erro ao atualizar caso.' });
+  } catch (err: any) {
+    console.error('[casos] Erro PATCH /:id:', err.message);
+    return res.status(500).json({ error: 'Erro ao atualizar caso: ' + err.message });
   }
 });
 
@@ -150,9 +143,9 @@ router.delete('/:id', async (req: Request, res: Response) => {
     );
     if (!result.rows.length) return res.status(404).json({ error: 'Caso não encontrado.' });
     return res.json({ success: true });
-  } catch (err) {
-    console.error('[casos] DELETE /:id', err);
-    return res.status(500).json({ error: 'Erro ao excluir caso.' });
+  } catch (err: any) {
+    console.error('[casos] Erro DELETE /:id:', err.message);
+    return res.status(500).json({ error: 'Erro ao excluir caso: ' + err.message });
   }
 });
 
