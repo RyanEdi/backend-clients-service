@@ -5,6 +5,7 @@ import { sanitizeText } from '../utils/sanitizers';
 
 const router = Router();
 
+// Função auxiliar para verificar o ID do advogado logado
 const getUserId = (req: Request): number | null => {
   const raw = req.headers['x-user-id'];
   const id = Number(raw);
@@ -19,19 +20,19 @@ router.get('/', async (req: Request, res: Response) => {
   try {
     const result = await pool.query(
       `SELECT
-         c.id,
-         c.cliente_id AS "clienteId",
-         cl.nome_completo AS "clienteNome",
-         c.tipo,
-         c.status,
-         c.data_abertura AS "dataAbertura",
-         c.prazo,
-         c.observacoes,
-         c.created_at AS "createdAt"
-       FROM casos_adv c
-       LEFT JOIN clientes_adv cl ON cl.id = c.cliente_id
-       WHERE c.advogado_id = $1
-       ORDER BY c.created_at DESC`,
+          c.id,
+          c.cliente_id AS "clienteId",
+          cl.nome_completo AS "clienteNome",
+          c.tipo,
+          c.status,
+          c.data_abertura AS "dataAbertura",
+          c.prazo,
+          c.observacoes,
+          c.created_at AS "createdAt"
+        FROM casos_adv c
+        LEFT JOIN clientes_adv cl ON cl.id = c.cliente_id
+        WHERE c.advogado_id = $1
+        ORDER BY c.created_at DESC`,
       [advogadoId]
     );
     return res.json(result.rows);
@@ -105,15 +106,16 @@ router.patch('/:id', async (req: Request, res: Response) => {
   const { clienteId, tipo, dataAbertura, prazo, status, observacoes } = req.body;
 
   try {
+    // Atualiza explicitamente os campos fornecidos ou define como NULL se não informados
     const result = await pool.query(
       `UPDATE casos_adv SET
-         cliente_id = COALESCE($1, cliente_id),
-         tipo = COALESCE($2, tipo),
-         data_abertura = COALESCE($3, data_abertura),
-         prazo = $4,
-         status = COALESCE($5, status),
-         observacoes = $6,
-         updated_at = NOW()
+          cliente_id = $1,
+          tipo = $2,
+          data_abertura = $3,
+          prazo = $4,
+          status = $5,
+          observacoes = $6,
+          updated_at = NOW()
        WHERE id = $7 AND advogado_id = $8
        RETURNING *`,
       [
@@ -127,6 +129,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
         advogadoId,
       ]
     );
+
     if (!result.rows.length) return res.status(404).json({ error: 'Caso não encontrado.' });
     return res.json(result.rows[0]);
   } catch (err) {
