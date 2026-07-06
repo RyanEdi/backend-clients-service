@@ -8,7 +8,7 @@ import { sanitizeText } from '../utils/sanitizers';
 import { encryptField, encryptIfPresent, decryptField } from '../utils/crypto';
 
 const router = Router();
-// Multer configurado em memória para interpretar os dados multipart/form-data
+// Configuração do multer para processar FormData (arquivos e texto) em memória
 const upload = multer();
 
 type PeriodoPayload = {
@@ -76,9 +76,9 @@ const sanitizeOptionalText = (raw: unknown): string | undefined => {
   return sanitized;
 };
 
-// MODIFICADO: Agora aceita o arquivo vindo do multer para extrair o nome original
+// Trata os campos que chegam via JSON ou FormData e anexa o nome do arquivo se existir
 const mapClientFields = (body: Record<string, any>, file?: Express.Multer.File) => {
-  const rawName = body.name ?? body.nomeAutor ?? body.nome_completo ?? body.nome; // Adicionado fallback para 'nome'
+  const rawName = body.name ?? body.nomeAutor ?? body.nome_completo ?? body.nome;
   const rawCpf = body.cpf;
   const rawDataNascimento = body.dataNascimento ?? body.data_nascimento;
   const rawEmail = body.email ?? body.emailAutor;
@@ -97,7 +97,6 @@ const mapClientFields = (body: Record<string, any>, file?: Express.Multer.File) 
   const rawDataLaudo = body.dataLaudo;
   const rawCid = body.cid;
   const rawGrauDeficienciaIfbra = body.grauDeficienciaIfbra;
-  // MODIFICADO: Pega o nome vindo do body OU pega diretamente do arquivo do multer
   const rawDocumentoComprobatorioNome = body.documentoComprobatorioNome ?? file?.originalname;
   const rawSexoPrevidenciario = body.sexoPrevidenciario;
   const rawObservacoesJuridicas = body.observacoesJuridicas;
@@ -129,10 +128,9 @@ const mapClientFields = (body: Record<string, any>, file?: Express.Multer.File) 
     contribuicaoMensal: sanitizeOptionalText(rawContribuicaoMensal),
     valorDanoMoral: sanitizeOptionalText(rawValorDanoMoral),
     valorDaCausa: sanitizeOptionalText(rawValorDaCausa),
-    // MODIFICADO: Trata booleans que chegam como strings do FormData ("true" / "false")
     possuiDeficiencia:
       rawPossuiDeficiencia !== undefined
-        ? (rawPossuiDeficiencia === 'true' || rawPossuiDeficiencia === true)
+        ? (rawPossuiDeficiencia === 'true' || rawPossuiDeficiencia === true) // Converte corretamente strings 'true'/'false'
         : undefined,
     tipoDeficiencia: sanitizeOptionalText(rawTipoDeficiencia),
     dataLaudo: sanitizeOptionalText(rawDataLaudo),
@@ -236,7 +234,6 @@ const hashSensitiveSnapshot = async (snapshot: Record<string, string>) => {
       await bcrypt.hash(value, SALT_ROUNDS),
     ])
   );
-
   return Object.fromEntries(entries);
 };
 
@@ -362,14 +359,13 @@ router.get('/:id', async (req: Request, res: Response) => {
   }
 });
 
-// MODIFICADO: Adicionado upload.single('documentoComprobatorio') para permitir leitura do req.body
+// POST /api/clients (Com suporte a Multipart/FormData via multer)
 router.post('/', upload.single('documentoComprobatorio'), async (req: Request, res: Response) => {
   const advogadoId = getAdvogadoIdFromSession(req);
   if (!advogadoId) {
     return res.status(401).json({ error: 'Sessão expirada. Faça login novamente.' });
   }
 
-  // MODIFICADO: Passando o req.file também para extrair o nome do documento
   const fields = mapClientFields(req.body || {}, req.file);
   const name = fields.name?.trim() || '';
   const cpf = fields.cpf?.trim() || '';
@@ -378,7 +374,9 @@ router.post('/', upload.single('documentoComprobatorio'), async (req: Request, r
     return res.status(400).json({ error: 'Nome completo e CPF são obrigatórios.' });
   }
 
+  // Garantimos que a transação aconteça na mesma conexão do banco
   const client = await pool.connect();
+  
   try {
     const clientId = uuid();
     const cpfHash = await bcrypt.hash(cpf, SALT_ROUNDS);
@@ -408,8 +406,10 @@ router.post('/', upload.single('documentoComprobatorio'), async (req: Request, r
     });
     const sensitiveHashes = await hashSensitiveSnapshot(sensitiveSnapshot);
 
-    await pool.query('BEGIN');
-    await pool.query(
+    await client.query('BEGIN');
+    
+    // Inserção com cast explícito ::jsonb no $10 e $29
+    await client.query(
       `INSERT INTO clientes_adv (
         id, advogado_id, nome_completo, cpf, cpf_hash, email, email_hash, telefone, telefone_hash,
         dados_sensiveis_hash, cep, endereco_completo, estado_civil, profissao, rg, rg_hash, cidade_uf, contribuicao_mensal,
@@ -418,10 +418,12 @@ router.post('/', upload.single('documentoComprobatorio'), async (req: Request, r
         calculo_previdenciario, observacoes_juridicas, endereco_escritorio, endereco_df_iprev
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, 
-        $10::jsonb, -- CORREÇÃO AQUI: Adicionado o ::jsonb
+        $10::jsonb, 
         $11, $12, $13, $14, $15, $16, $17, $18,
-        $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, 
-        $29::jsonb, $30, $31, $32
+        $19, $20, $21, $22, $23, $24, $25, 
+        $26, $27, $28, 
+        $29::jsonb, 
+        $30, $31, $32
       )`,
       [
         clientId, advogadoId, encryptField(name), encryptField(cpf), cpfHash,
@@ -443,40 +445,37 @@ router.post('/', upload.single('documentoComprobatorio'), async (req: Request, r
       ]
     );
 
+    // Inserção dos períodos na tabela secundária usando a mesma conexão
     for (const periodo of fields.periodos) {
-      await pool.query(
+      await client.query(
         `INSERT INTO clientes_adv_periodos (cliente_id, tipo, data_inicio, data_fim) VALUES ($1, $2, $3, $4)`,
         [clientId, periodo.tipo, normalizeOptional(periodo.inicio), normalizeOptional(periodo.fim)]
       );
     }
 
-    await pool.query('COMMIT');
+    await client.query('COMMIT');
 
     const created = await pool.query(`${clientSelectSql} WHERE c.id = $1 AND c.advogado_id = $2`, [clientId, advogadoId]);
     const withPeriodos = await attachPeriodos(created.rows);
     return res.status(201).json(withPeriodos[0]);
   } catch (err) {
-    await pool.query('ROLLBACK');
-    
-    // Extrai a mensagem de erro real do PostgreSQL ou do Node
+    await client.query('ROLLBACK');
     const errorMessage = err instanceof Error ? err.message : String(err);
-    console.error('Erro detalhado no BD:', err);
-    
-    // Devolve o erro EXATO para a tela do Frontend
+    console.error('Erro detalhado no BD (Criação de Cliente):', err);
+    // Retorna o erro exato para o Frontend exibir no banner vermelho
     return res.status(500).json({ error: `Erro SQL: ${errorMessage}` });
   } finally {
     client.release();
   }
 });
 
-// MODIFICADO: Adicionado upload.single('documentoComprobatorio') aqui também para o PATCH
+// PATCH /api/clients/:id (Com suporte a Multipart/FormData via multer)
 router.patch('/:id', upload.single('documentoComprobatorio'), async (req: Request, res: Response) => {
   const advogadoId = getAdvogadoIdFromSession(req);
   if (!advogadoId) {
     return res.status(401).json({ error: 'Sessão expirada. Faça login novamente.' });
   }
 
-  // MODIFICADO: Passando o req.file para mapear caso haja update do documento
   const fields = mapClientFields(req.body || {}, req.file);
   const updates: string[] = [];
   const values: Array<string | null> = [];
@@ -580,6 +579,8 @@ router.patch('/:id', upload.single('documentoComprobatorio'), async (req: Reques
     });
 
     const sensitiveHashes = await hashSensitiveSnapshot(mergedSensitiveSnapshot);
+    
+    // Injeção com cast explícito ::jsonb
     updates.push(`dados_sensiveis_hash = $${values.length + 1}::jsonb`);
     values.push(JSON.stringify(sensitiveHashes));
 
@@ -604,42 +605,43 @@ router.patch('/:id', upload.single('documentoComprobatorio'), async (req: Reques
       addUpdate('rg_hash', rgValue ? await bcrypt.hash(rgValue, SALT_ROUNDS) : null);
     }
 
-    await pool.query('BEGIN');
+    await client.query('BEGIN');
 
     if (updates.length > 0) {
       updates.push(`updated_at = NOW()`);
       values.push(req.params.id);
       values.push(String(advogadoId));
 
-      const result = await pool.query(
+      const result = await client.query(
         `UPDATE clientes_adv SET ${updates.join(', ')} WHERE id = $${values.length - 1} AND advogado_id = $${values.length}`,
         values
       );
 
       if (!result.rowCount) {
-        await pool.query('ROLLBACK');
+        await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Cliente não encontrado' });
       }
     }
 
     if (fields.periodos.length > 0) {
-      await pool.query('DELETE FROM clientes_adv_periodos WHERE cliente_id = $1', [req.params.id]);
+      await client.query('DELETE FROM clientes_adv_periodos WHERE cliente_id = $1', [req.params.id]);
       for (const periodo of fields.periodos) {
-        await pool.query(
+        await client.query(
           `INSERT INTO clientes_adv_periodos (cliente_id, tipo, data_inicio, data_fim) VALUES ($1, $2, $3, $4)`,
           [req.params.id, periodo.tipo, normalizeOptional(periodo.inicio), normalizeOptional(periodo.fim)]
         );
       }
     }
 
-    await pool.query('COMMIT');
+    await client.query('COMMIT');
     const updated = await pool.query(`${clientSelectSql} WHERE c.id = $1 AND c.advogado_id = $2`, [req.params.id, advogadoId]);
     const withPeriodos = await attachPeriodos(updated.rows);
     return res.json(withPeriodos[0]);
   } catch (err) {
-    await pool.query('ROLLBACK');
-    console.error('Erro ao atualizar cliente:', err);
-    return res.status(500).json({ error: 'Erro ao atualizar cliente.' });
+    await client.query('ROLLBACK');
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    console.error('Erro detalhado no BD (Atualização de Cliente):', err);
+    return res.status(500).json({ error: `Erro SQL: ${errorMessage}` });
   } finally {
     client.release();
   }
@@ -656,8 +658,9 @@ router.delete('/:id', async (req: Request, res: Response) => {
     if (result.rows.length === 0) return res.status(404).json({ error: 'Cliente não encontrado' });
     return res.json({ success: true, deletedId: result.rows[0].id });
   } catch (err) {
-    console.error('Erro ao excluir cliente:', err);
-    return res.status(500).json({ error: 'Erro ao excluir cliente.' });
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    console.error('Erro detalhado no BD (Exclusão):', err);
+    return res.status(500).json({ error: `Erro SQL: ${errorMessage}` });
   }
 });
 
