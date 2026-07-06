@@ -302,7 +302,7 @@ const attachPeriodos = async (rows: any[]) => {
        data_inicio AS "inicio",
        data_fim AS "fim"
      FROM clientes_adv_periodos
-     WHERE cliente_id = ANY($1::uuid[])
+     WHERE cliente_id = ANY($1::text[])
      ORDER BY id ASC`,
     [ids]
   );
