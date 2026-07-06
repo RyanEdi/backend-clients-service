@@ -11,62 +11,37 @@ const getUserId = (req: Request): number | null => {
   return Number.isInteger(id) && id > 0 ? id : null;
 };
 
-// GET /api/casos — lista casos do advogado
+// GET /api/casos — Lista de casos com depuração detalhada
 router.get('/', async (req: Request, res: Response) => {
   const advogadoId = getUserId(req);
   if (!advogadoId) return res.status(401).json({ error: 'Não autorizado.' });
 
   try {
-    const query = `
-      SELECT
-          id,
-          cliente_id AS "clienteId",
-          tipo,
-          status,
-          data_abertura AS "dataAbertura",
-          prazo,
-          observacoes,
-          created_at AS "createdAt"
-        FROM casos_adv
-        WHERE advogado_id = $1
-        ORDER BY created_at DESC`;
-    
+    // Tentativa de busca simples na tabela casos_adv
+    const query = `SELECT * FROM casos_adv WHERE advogado_id = $1`;
     const result = await pool.query(query, [advogadoId]);
+    
     return res.json(result.rows);
   } catch (err: any) {
-    console.error('[casos] Erro GET /:', err.message);
-    return res.status(500).json({ error: 'Erro ao listar casos: ' + err.message });
+    // LOG DETALHADO: Isso aparecerá no painel da Railway
+    console.error('[ERRO_BANCO] Falha na query de casos_adv:', {
+      message: err.message,
+      code: err.code, // Ex: '42P01' (tabela não existe) ou '42703' (coluna não existe)
+      detail: err.detail
+    });
+    return res.status(500).json({ 
+      error: 'Erro interno ao buscar casos.',
+      detalhe: err.message 
+    });
   }
 });
 
-// GET /api/casos/:id — detalhe de um caso
-router.get('/:id', async (req: Request, res: Response) => {
-  const advogadoId = getUserId(req);
-  if (!advogadoId) return res.status(401).json({ error: 'Não autorizado.' });
-
-  try {
-    const result = await pool.query(
-      `SELECT * FROM casos_adv WHERE id = $1 AND advogado_id = $2`,
-      [req.params.id, advogadoId]
-    );
-    if (!result.rows.length) return res.status(404).json({ error: 'Caso não encontrado.' });
-    return res.json(result.rows[0]);
-  } catch (err: any) {
-    console.error('[casos] Erro GET /:id:', err.message);
-    return res.status(500).json({ error: 'Erro ao buscar caso: ' + err.message });
-  }
-});
-
-// POST /api/casos — criar caso
+// POST /api/casos — Criação de caso
 router.post('/', async (req: Request, res: Response) => {
   const advogadoId = getUserId(req);
   if (!advogadoId) return res.status(401).json({ error: 'Não autorizado.' });
 
   const { clienteId, tipo, dataAbertura, prazo, status, observacoes } = req.body;
-
-  if (!tipo || !dataAbertura) {
-    return res.status(400).json({ error: 'Tipo e data de abertura são obrigatórios.' });
-  }
 
   try {
     const id = uuid();
@@ -74,25 +49,16 @@ router.post('/', async (req: Request, res: Response) => {
       `INSERT INTO casos_adv (id, advogado_id, cliente_id, tipo, status, data_abertura, prazo, observacoes)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
-      [
-        id,
-        advogadoId,
-        clienteId || null,
-        sanitizeText(tipo),
-        status || 'ativo',
-        dataAbertura,
-        prazo || null,
-        observacoes ? sanitizeText(observacoes) : null,
-      ]
+      [id, advogadoId, clienteId || null, sanitizeText(tipo), status || 'ativo', dataAbertura, prazo || null, observacoes ? sanitizeText(observacoes) : null]
     );
     return res.status(201).json(result.rows[0]);
   } catch (err: any) {
-    console.error('[casos] Erro POST /:', err.message);
-    return res.status(500).json({ error: 'Erro ao criar caso: ' + err.message });
+    console.error('[ERRO_BANCO] Falha no INSERT:', err.message);
+    return res.status(500).json({ error: 'Erro ao criar caso.', detalhe: err.message });
   }
 });
 
-// PATCH /api/casos/:id — atualizar caso
+// PATCH /api/casos/:id — Atualização
 router.patch('/:id', async (req: Request, res: Response) => {
   const advogadoId = getUserId(req);
   if (!advogadoId) return res.status(401).json({ error: 'Não autorizado.' });
@@ -101,51 +67,14 @@ router.patch('/:id', async (req: Request, res: Response) => {
 
   try {
     const result = await pool.query(
-      `UPDATE casos_adv SET
-          cliente_id = $1,
-          tipo = $2,
-          data_abertura = $3,
-          prazo = $4,
-          status = $5,
-          observacoes = $6,
-          updated_at = NOW()
-       WHERE id = $7 AND advogado_id = $8
-       RETURNING *`,
-      [
-        clienteId || null,
-        tipo ? sanitizeText(tipo) : null,
-        dataAbertura || null,
-        prazo || null,
-        status || null,
-        observacoes !== undefined ? sanitizeText(String(observacoes)) : null,
-        req.params.id,
-        advogadoId,
-      ]
+      `UPDATE casos_adv SET cliente_id = $1, tipo = $2, data_abertura = $3, prazo = $4, status = $5, observacoes = $6
+       WHERE id = $7 AND advogado_id = $8 RETURNING *`,
+      [clienteId || null, tipo ? sanitizeText(tipo) : null, dataAbertura || null, prazo || null, status || null, observacoes ? sanitizeText(observacoes) : null, req.params.id, advogadoId]
     );
-
-    if (!result.rows.length) return res.status(404).json({ error: 'Caso não encontrado.' });
     return res.json(result.rows[0]);
   } catch (err: any) {
-    console.error('[casos] Erro PATCH /:id:', err.message);
-    return res.status(500).json({ error: 'Erro ao atualizar caso: ' + err.message });
-  }
-});
-
-// DELETE /api/casos/:id
-router.delete('/:id', async (req: Request, res: Response) => {
-  const advogadoId = getUserId(req);
-  if (!advogadoId) return res.status(401).json({ error: 'Não autorizado.' });
-
-  try {
-    const result = await pool.query(
-      `DELETE FROM casos_adv WHERE id = $1 AND advogado_id = $2 RETURNING id`,
-      [req.params.id, advogadoId]
-    );
-    if (!result.rows.length) return res.status(404).json({ error: 'Caso não encontrado.' });
-    return res.json({ success: true });
-  } catch (err: any) {
-    console.error('[casos] Erro DELETE /:id:', err.message);
-    return res.status(500).json({ error: 'Erro ao excluir caso: ' + err.message });
+    console.error('[ERRO_BANCO] Falha no UPDATE:', err.message);
+    return res.status(500).json({ error: 'Erro ao atualizar.', detalhe: err.message });
   }
 });
 
