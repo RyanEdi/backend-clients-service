@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import bcrypt from 'bcrypt';
 import { v4 as uuid } from 'uuid';
 import multer from 'multer';
+import nodemailer from 'nodemailer';
 import pool from '../config/database';
 import { SALT_ROUNDS } from '../config/constants';
 import { sanitizeText } from '../utils/sanitizers';
@@ -76,7 +77,6 @@ const sanitizeOptionalText = (raw: unknown): string | undefined => {
   return sanitized;
 };
 
-// Trata os campos que chegam via JSON ou FormData e anexa o nome do arquivo se existir
 const mapClientFields = (body: Record<string, any>, file?: Express.Multer.File) => {
   const rawName = body.name ?? body.nomeAutor ?? body.nome_completo ?? body.nome;
   const rawCpf = body.cpf;
@@ -130,7 +130,7 @@ const mapClientFields = (body: Record<string, any>, file?: Express.Multer.File) 
     valorDaCausa: sanitizeOptionalText(rawValorDaCausa),
     possuiDeficiencia:
       rawPossuiDeficiencia !== undefined
-        ? (rawPossuiDeficiencia === 'true' || rawPossuiDeficiencia === true) // Converte corretamente strings 'true'/'false'
+        ? (rawPossuiDeficiencia === 'true' || rawPossuiDeficiencia === true)
         : undefined,
     tipoDeficiencia: sanitizeOptionalText(rawTipoDeficiencia),
     dataLaudo: sanitizeOptionalText(rawDataLaudo),
@@ -343,6 +343,64 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
+// NOVA ROTA: POST /api/clients/:id/send-email
+router.post('/:id/send-email', async (req: Request, res: Response) => {
+  const advogadoId = getAdvogadoIdFromSession(req);
+  if (!advogadoId) {
+    return res.status(401).json({ error: 'Sessão expirada. Faça login novamente.' });
+  }
+
+  const { para, assunto, mensagem } = req.body;
+
+  if (!para) {
+    return res.status(400).json({ error: 'O e-mail de destino é obrigatório.' });
+  }
+
+  try {
+    const result = await pool.query(`${clientSelectSql} WHERE c.id = $1 AND c.advogado_id = $2`, [req.params.id, advogadoId]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Cliente não encontrado' });
+    
+    const clientData = decryptClientRow(result.rows[0]);
+
+    // Configuração do transporter do Nodemailer
+    const transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST || 'smtp.gmail.com',
+      port: Number(process.env.SMTP_PORT) || 587,
+      secure: false, 
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+    });
+
+    const mailOptions = {
+      from: `"Direito & Provento" <${process.env.SMTP_USER}>`,
+      to: para,
+      subject: assunto || `Ficha Cadastral: ${clientData.name}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+          <h2 style="color: #0b192c;">Direito & Provento — Correspondência Eletrônica</h2>
+          <p>${mensagem ? mensagem.replace(/\n/g, '<br>') : 'Segue em anexo os dados cadastrais solicitados.'}</p>
+          <hr style="border: 0; border-top: 1px solid #ddd; margin: 20px 0;">
+          <h3>Resumo Cadastral do Cliente</h3>
+          <ul>
+            <li><strong>Nome:</strong> ${clientData.name}</li>
+            <li><strong>CPF:</strong> ${clientData.cpf}</li>
+            <li><strong>E-mail:</strong> ${clientData.email || '-'}</li>
+            <li><strong>Cidade/UF:</strong> ${clientData.cidadeUf || '-'}</li>
+          </ul>
+        </div>
+      `
+    };
+
+    await transporter.sendMail(mailOptions);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Erro ao enviar e-mail:', err);
+    return res.status(500).json({ error: 'Erro interno ao processar e-mail.' });
+  }
+});
+
 router.get('/:id', async (req: Request, res: Response) => {
   const advogadoId = getAdvogadoIdFromSession(req);
   if (!advogadoId) {
@@ -374,7 +432,6 @@ router.post('/', upload.single('documentoComprobatorio'), async (req: Request, r
     return res.status(400).json({ error: 'Nome completo e CPF são obrigatórios.' });
   }
 
-  // Garantimos que a transação aconteça na mesma conexão do banco
   const client = await pool.connect();
   
   try {
@@ -408,7 +465,6 @@ router.post('/', upload.single('documentoComprobatorio'), async (req: Request, r
 
     await client.query('BEGIN');
     
-    // Inserção com cast explícito ::jsonb no $10 e $29
     await client.query(
       `INSERT INTO clientes_adv (
         id, advogado_id, nome_completo, cpf, cpf_hash, email, email_hash, telefone, telefone_hash,
@@ -445,7 +501,6 @@ router.post('/', upload.single('documentoComprobatorio'), async (req: Request, r
       ]
     );
 
-    // Inserção dos períodos na tabela secundária usando a mesma conexão
     for (const periodo of fields.periodos) {
       await client.query(
         `INSERT INTO clientes_adv_periodos (cliente_id, tipo, data_inicio, data_fim) VALUES ($1, $2, $3, $4)`,
@@ -455,14 +510,13 @@ router.post('/', upload.single('documentoComprobatorio'), async (req: Request, r
 
     await client.query('COMMIT');
 
-    const created = await pool.query(`${clientSelectSql} WHERE c.id = $1 AND c.advogado_id = $2`, [clientId, advogadoId]);
+    const created = await pool.query(`${clientSelectSql} WHERE c.id = $1 AND c.advogado_id = $2`, [clientId,advogadoId]);
     const withPeriodos = await attachPeriodos(created.rows);
     return res.status(201).json(withPeriodos[0]);
   } catch (err) {
     await client.query('ROLLBACK');
     const errorMessage = err instanceof Error ? err.message : String(err);
     console.error('Erro detalhado no BD (Criação de Cliente):', err);
-    // Retorna o erro exato para o Frontend exibir no banner vermelho
     return res.status(500).json({ error: `Erro SQL: ${errorMessage}` });
   } finally {
     client.release();
@@ -580,7 +634,6 @@ router.patch('/:id', upload.single('documentoComprobatorio'), async (req: Reques
 
     const sensitiveHashes = await hashSensitiveSnapshot(mergedSensitiveSnapshot);
     
-    // Injeção com cast explícito ::jsonb
     updates.push(`dados_sensiveis_hash = $${values.length + 1}::jsonb`);
     values.push(JSON.stringify(sensitiveHashes));
 
