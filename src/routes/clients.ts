@@ -343,7 +343,7 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
-// NOVA ROTA: POST /api/clients/:id/send-email
+// POST /api/clients/:id/send-email
 router.post('/:id/send-email', async (req: Request, res: Response) => {
   const advogadoId = getAdvogadoIdFromSession(req);
   if (!advogadoId) {
@@ -358,53 +358,48 @@ router.post('/:id/send-email', async (req: Request, res: Response) => {
 
   try {
     const result = await pool.query(`${clientSelectSql} WHERE c.id = $1 AND c.advogado_id = $2`, [req.params.id, advogadoId]);
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Cliente não encontrado' });
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Cliente não encontrado' });
+    }
     
     const clientData = decryptClientRow(result.rows[0]);
 
-    // Configuração do transporter do Nodemailer
-    // Substitua a criação do transporter por esta versão mais robusta:
-    const transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || 'smtp.gmail.com',
-      port: Number(process.env.SMTP_PORT) || 465, // Tente mudar para 465 se a 587 estiver bloqueada
-      secure: true, // Mude para true se usar a porta 465
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
+    const resendApiKey = process.env.RESEND_API_KEY || 're_seu_token';
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${resendApiKey}`,
       },
-      connectionTimeout: 5000, // 5 segundos de limite para conectar
-      greetingTimeout: 5000,   // 5 segundos de limite para o handshake
-      socketTimeout: 5000,     // 5 segundos de limite de atividade
-      tls: {
-        rejectUnauthorized: false // Ignora erros de certificado self-signed se houver
-      }
+      body: JSON.stringify({
+        from: 'Direito & Provento <onboarding@resend.dev>', 
+        to: [para],
+        subject: assunto || `Ficha Cadastral: ${clientData.name}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+            <h2 style="color: #0b192c;">Direito & Provento — Correspondência Eletrônica</h2>
+            <p>${mensagem ? mensagem.replace(/\n/g, '<br>') : 'Segue os dados cadastrais solicitados.'}</p>
+            <hr style="border: 0; border-top: 1px solid #ddd; margin: 20px 0;">
+            <h3>Resumo Cadastral do Cliente</h3>
+            <ul>
+              <li><strong>Nome:</strong> ${clientData.name}</li>
+              <li><strong>CPF:</strong> ${clientData.cpf}</li>
+            </ul>
+          </div>
+        `,
+      }),
     });
 
-    const mailOptions = {
-      from: `"Direito & Provento" <${process.env.SMTP_USER}>`,
-      to: para,
-      subject: assunto || `Ficha Previdenciária: ${clientData.name}`,
-      html: `
-        <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
-          <h2 style="color: #0b192c;">Direito & Provento — Correspondência Eletrônica</h2>
-          <p>${mensagem ? mensagem.replace(/\n/g, '<br>') : 'Segue em anexo os dados cadastrais solicitados.'}</p>
-          <hr style="border: 0; border-top: 1px solid #ddd; margin: 20px 0;">
-          <h3>Resumo Previdenciário do Cliente</h3>
-          <ul>
-            <li><strong>Nome:</strong> ${clientData.name}</li>
-            <li><strong>CPF:</strong> ${clientData.cpf}</li>
-            <li><strong>E-mail:</strong> ${clientData.email || '-'}</li>
-            <li><strong>Cidade/UF:</strong> ${clientData.cidadeUf || '-'}</li>
-          </ul>
-        </div>
-      `
-    };
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(JSON.stringify(errorData));
+    }
 
-    await transporter.sendMail(mailOptions);
     return res.json({ success: true });
   } catch (err) {
     console.error('Erro ao enviar e-mail:', err);
-    return res.status(500).json({ error: 'Erro interno ao processar e-mail.' });
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({ error: `Erro no envio: ${errorMessage}` });
   }
 });
 
