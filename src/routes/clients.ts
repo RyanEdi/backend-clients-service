@@ -372,15 +372,15 @@ router.post('/:id/send-email', async (req: Request, res: Response) => {
         'Authorization': `Bearer ${resendApiKey}`,
       },
       body: JSON.stringify({
-        from: 'Direito & Provento <onboarding@resend.dev>', 
+        from: 'Direito & Provento <direitoeprovento@gmail.com>', 
         to: [para],
-        subject: assunto || `Ficha Cadastral: ${clientData.name}`,
+        subject: assunto || `Ficha Previdenciária: ${clientData.name}`,
         html: `
           <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
             <h2 style="color: #0b192c;">Direito & Provento — Correspondência Eletrônica</h2>
             <p>${mensagem ? mensagem.replace(/\n/g, '<br>') : 'Segue os dados cadastrais solicitados.'}</p>
             <hr style="border: 0; border-top: 1px solid #ddd; margin: 20px 0;">
-            <h3>Resumo Cadastral do Cliente</h3>
+            <h3>Resumo Previdenciário do Cliente</h3>
             <ul>
               <li><strong>Nome:</strong> ${clientData.name}</li>
               <li><strong>CPF:</strong> ${clientData.cpf}</li>
