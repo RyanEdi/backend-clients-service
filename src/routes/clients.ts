@@ -363,26 +363,33 @@ router.post('/:id/send-email', async (req: Request, res: Response) => {
     const clientData = decryptClientRow(result.rows[0]);
 
     // Configuração do transporter do Nodemailer
+    // Substitua a criação do transporter por esta versão mais robusta:
     const transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST || 'smtp.gmail.com',
-      port: Number(process.env.SMTP_PORT) || 587,
-      secure: false, 
+      port: Number(process.env.SMTP_PORT) || 465, // Tente mudar para 465 se a 587 estiver bloqueada
+      secure: true, // Mude para true se usar a porta 465
       auth: {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS,
       },
+      connectionTimeout: 5000, // 5 segundos de limite para conectar
+      greetingTimeout: 5000,   // 5 segundos de limite para o handshake
+      socketTimeout: 5000,     // 5 segundos de limite de atividade
+      tls: {
+        rejectUnauthorized: false // Ignora erros de certificado self-signed se houver
+      }
     });
 
     const mailOptions = {
       from: `"Direito & Provento" <${process.env.SMTP_USER}>`,
       to: para,
-      subject: assunto || `Ficha Cadastral: ${clientData.name}`,
+      subject: assunto || `Ficha Previdenciária: ${clientData.name}`,
       html: `
         <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
           <h2 style="color: #0b192c;">Direito & Provento — Correspondência Eletrônica</h2>
           <p>${mensagem ? mensagem.replace(/\n/g, '<br>') : 'Segue em anexo os dados cadastrais solicitados.'}</p>
           <hr style="border: 0; border-top: 1px solid #ddd; margin: 20px 0;">
-          <h3>Resumo Cadastral do Cliente</h3>
+          <h3>Resumo Previdenciário do Cliente</h3>
           <ul>
             <li><strong>Nome:</strong> ${clientData.name}</li>
             <li><strong>CPF:</strong> ${clientData.cpf}</li>
